@@ -1,0 +1,212 @@
+{
+  "_backup_info": {
+    "date": "2026-04-24",
+    "workflow_id": "6nJBQ4J8SkysTTbx",
+    "workflow_name": "Agente Camaleao - Vitrine SaaS",
+    "n8n_instance": "https://n8n.agbotia.com.br",
+    "version_id": "90a4d67e-17ec-40c2-b537-5a41e95a3444",
+    "version_counter": 266,
+    "status": "PRODUCAO_VALIDADA",
+    "fixes_applied": [
+      "chatId @lid fix - preservar formato @lid para WAHA WEBJS",
+      "keypair body no no Enviar Resposta WAHA",
+      "filtro triplo de eventos no Filtrar Evento",
+      "optional chaining na expressao de captura da IA"
+    ]
+  },
+  "id": "6nJBQ4J8SkysTTbx",
+  "name": "Agente Camaleao - Vitrine SaaS",
+  "active": true,
+  "nodes": [
+    {
+      "id": "node-webhook",
+      "name": "Webhook WAHA Vitrine",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agente-camaleon",
+        "responseMode": "lastNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-filter-event-code",
+      "name": "Filtrar Evento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\n// Filtra apenas mensagens reais de texto (ignora e2e_notification, status, etc)\nconst isRealMessage = (\n  body.event === 'message' &&\n  !body.payload.fromMe &&\n  body.payload.body &&\n  body.payload.body.trim() !== '' &&\n  body.payload._data?.type !== 'e2e_notification'\n);\n\nif (isRealMessage) {\n  return $input.all();\n}\nreturn [];"
+      }
+    },
+    {
+      "id": "node-extract",
+      "name": "Extrair Dados WAHA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst payload = body.payload || body;\n\n// REGRA CRITICA: preservar @lid completo para WAHA WEBJS\nconst fromRaw = payload.from || '';\nlet phone;\nif (fromRaw.includes('@lid')) {\n  phone = fromRaw; // ex: 118747406835835@lid\n} else {\n  phone = fromRaw.replace('@c.us', '').replace('@s.whatsapp.net', '');\n}\n\nconst message = (payload.body || payload.text || '').trim();\nconst session = body.session || 'default';\nconst msgId = payload.id || '';\n\nif (!message || !phone || phone.includes('-') || (payload.fromMe === true)) {\n  return [];\n}\n\nreturn [{ json: { phone, message, session, msgId, rawBody: body } }];"
+      }
+    },
+    {
+      "id": "node-get-session",
+      "name": "Buscar Sessao Usuario",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT phone, nicho, historico FROM agente_camaleon_sessoes WHERE phone = '{{ $json.phone }}' LIMIT 1;",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-merge-session",
+      "name": "Merge Dados + Sessao",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const extracted = $input.all()[0]?.json || {};\nconst sessionRow = $input.all()[1]?.json || null;\n\nconst phone = extracted.phone;\nconst message = extracted.message;\nconst session = extracted.session;\nconst nicho = sessionRow?.nicho || null;\nconst historico = sessionRow?.historico ? JSON.parse(sessionRow.historico) : [];\n\nreturn [{ json: { phone, message, session, nicho, historico } }];"
+      }
+    },
+    {
+      "id": "node-format-hist",
+      "name": "Formatar Historico",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const phone = $('Extrair Dados WAHA').first().json.phone;\nconst message = $('Extrair Dados WAHA').first().json.message;\nconst historico = $('Merge Dados + Sessao').first().json.historico || [];\n\nconst mensagens = historico.map(h => ({ role: h.role, content: h.content }));\nmensagens.push({ role: 'user', content: message });\n\nreturn [{ json: { ...$input.first().json, mensagens_formatadas: mensagens } }];"
+      }
+    },
+    {
+      "id": "node-if-nicho",
+      "name": "Tem Nicho Selecionado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-nicho",
+              "leftValue": "={{ $json.nicho }}",
+              "operator": { "operation": "notEmpty", "singleValue": true, "type": "string" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-switch-nicho",
+      "name": "Switch Nicho Ativo",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "combinator": "and", "conditions": [{ "leftValue": "={{ $json.nicho }}", "operator": { "operation": "equals", "type": "string" }, "rightValue": "estetica" }] }, "renameOutput": true, "outputKey": "Estetica" },
+            { "conditions": { "combinator": "and", "conditions": [{ "leftValue": "={{ $json.nicho }}", "operator": { "operation": "equals", "type": "string" }, "rightValue": "saude" }] }, "renameOutput": true, "outputKey": "Saude" },
+            { "conditions": { "combinator": "and", "conditions": [{ "leftValue": "={{ $json.nicho }}", "operator": { "operation": "equals", "type": "string" }, "rightValue": "marketing" }] }, "renameOutput": true, "outputKey": "Marketing" }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "node-auto-mkt",
+      "name": "Auto-Definir Marketing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO agente_camaleon_sessoes (phone, nicho, historico, updated_at)\nVALUES ('={{ $json.phone }}', 'marketing', '[]', NOW())\nON CONFLICT (phone) DO UPDATE SET nicho = 'marketing', updated_at = NOW();",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-ia-est",
+      "name": "Chamar Claude EST",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "x-api-key", "value": "ENV:ANTHROPIC_API_KEY" }, { "name": "anthropic-version", "value": "2023-06-01" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-sonnet-4-5\",\"max_tokens\":1024,\"system\":\"Voce e a Sofia, recepcionista de clinica estetica.\",\"messages\": {{ JSON.stringify($('Formatar Historico').first().json.mensagens_formatadas) }}}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-ia-sau",
+      "name": "Chamar Claude SAU",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "x-api-key", "value": "ENV:ANTHROPIC_API_KEY" }, { "name": "anthropic-version", "value": "2023-06-01" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-sonnet-4-5\",\"max_tokens\":1024,\"system\":\"Voce e a Ana, secretaria de clinica medica.\",\"messages\": {{ JSON.stringify($('Formatar Historico').first().json.mensagens_formatadas) }}}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-ia-mkt",
+      "name": "Chamar Claude MKT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "x-api-key", "value": "ENV:ANTHROPIC_API_KEY" }, { "name": "anthropic-version", "value": "2023-06-01" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-sonnet-4-5\",\"max_tokens\":1024,\"system\":\"Voce e o Alex, consultor de automacao digital da Agbotia.\",\"messages\": {{ JSON.stringify($('Formatar Historico').first().json.mensagens_formatadas) }}}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-save-hist",
+      "name": "Salvar Historico",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE agente_camaleon_sessoes SET historico = '...', updated_at = NOW() WHERE phone = '={{ $(\"Extrair Dados WAHA\").first().json.phone }}';"
+      }
+    },
+    {
+      "id": "node-send-text",
+      "name": "Enviar Resposta WAHA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "parameters": {
+        "method": "POST",
+        "url": "http://212.85.2.130:3001/api/sendText",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "keypair",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "session", "value": "default" },
+            { "name": "chatId", "value": "={{ $('Extrair Dados WAHA').first().json.phone.includes('@') ? $('Extrair Dados WAHA').first().json.phone : $('Extrair Dados WAHA').first().json.phone + '@c.us' }}" },
+            { "name": "text", "value": "={{ $('Chamar Claude MKT').first()?.json?.content?.[0]?.text || $('Chamar Claude EST').first()?.json?.content?.[0]?.text || $('Chamar Claude SAU').first()?.json?.content?.[0]?.text || 'Erro na resposta' }}" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      }
+    }
+  ],
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
+}
