@@ -26,8 +26,8 @@
 
 | Componente | Valor |
 |---|---|
-| VPS IP | `212.85.2.130` |
-| WAHA Vitrine | `http://212.85.2.130:3001` |
+| VPS IP | `YOUR_VPS_IP` |
+| WAHA Vitrine | `http://YOUR_VPS_IP:3001` |
 | n8n | `https://n8n.agbotia.com.br` |
 | Workflow ID | `6nJBQ4J8SkysTTbx` |
 | Sessão WAHA | `default` |
@@ -151,10 +151,10 @@ return []; // Para o fluxo silenciosamente
 
 ---
 
-## 🔴 REGRA #4 — Configuração de Envio (Key-Value Pairs)
+## 🔴 REGRA #4 — O "Escape das Aspas" no JSON do WAHA
 
 ### O Problema
-O campo `specifyBody: "json"` com `jsonBody` como string causa erros de escape de caracteres quando a resposta da IA contém aspas, markdown ou caracteres especiais.
+Ao construir o body JSON para o WAHA manualmente em uma string, qualquer resposta da IA que contenha aspas, markdown ou caracteres especiais quebrará o JSON.
 
 ```javascript
 // ❌ PROIBIDO — causa erro "Session name is required" ou 500 no WAHA:
@@ -230,124 +230,33 @@ Webhook → 🚡 Filtrar Evento → 📋 Extrair Dados WAHA
 
 ---
 
-## 🗣️ Protocolos de Resposta — Alex 4.0
+## 🦎 Arquitetura Alex 7.5 — Máquina de Estados Rígida
+
+O fluxo do Alex não é mais baseado em "decisão" da IA, mas sim em um contador de mensagens do `assistant` que injeta diretivas imutáveis no System Prompt.
+
+### 1. Contagem de Mensagens (Assistant Count)
+| Mensagens enviadas | Estágio | Objetivo |
+|---|---|---|
+| **0** | `APRESENTACAO` | Valor imediato e permissão. |
+| **1 - 2** | `DOUTRINACAO` | Conscientização sobre perda de vendas. |
+| **3** | `FECHAMENTO` | Oferta de projeto sob medida. |
+| **3+** | `OBJECAO / DUVIDA` | Rotação de 3 CTAs para transbordo técnico. |
+
+### 2. Rotação de CTA (Anti-Loop)
+Para evitar que o bot se torne repetitivo na fase final, ele foi instruído a **nunca repetir o mesmo convite** do turno anterior. Ele alterna entre:
+- Convite para falar com o **consultor**.
+- Convite para falar com o **especialista**.
+- Convite para alinhar com o **time técnico**.
+
+### 3. Censura de Tags Internas
+O marcador `[ENCERRADO]` e as diretivas de fase são filtrados no nó `🛑 Filtrar Encerrado` antes de chegarem ao WAHA. O lead recebe apenas o texto limpo.
+
+---
+
+## 🗣️ Protocolos de Resposta — Alex 7.5
 
 > **Estas regras são parte do Core de Inteligência e devem estar sempre sincronizadas com o prompt no nó `📡 Chamar Claude MKT`.**
 
-### 🧠 Identidade Base: O Consultor de Belém
-
-O Alex não é um assistente virtual. É um **parceiro de negócios** que fala como alguém que vive e trabalha em Belém/PA. O tom de voz é a **BASE IMUTÁVEL** de todas as respostas:
-
-| Correto (✅) | Proibido (❌) |
-|---|---|
-| `tu`, `pois é`, `né não?`, `a gente` | `você`, `nossa empresa`, `prezado cliente` |
-| Direto e confiante | Listas numeradas longas |
-| 1 emoji por mensagem | Emoticons em contextos sérios |
-| Apresentar-se uma vez | Reapresentar-se a cada mensagem |
-
 ---
 
-### 📱 Regra de Ouro: Máximo 2 Linhas por Mensagem
-
-**Esta é a regra mais crítica para o WhatsApp.** Mensagens longas são ignoradas ou cansam o lead.
-
-```
-❌ ERRADO (1 mensagem longa):
-"Oi! Sou o Alex, consultor de automação da Agbotia de Belém/PA.
-Ajudo empresas a reduzir o tempo de resposta no WhatsApp usando
-Inteligência Artificial treinada especificamente para o seu negócio,
-disponível 24 horas por dia, 7 dias por semana. Gostaria de saber
-mais sobre como funciona?"
-
-✅ CORRETO (2 mensagens curtas):
-"Oi! Sou o Alex, consultor de automação aqui em Belém."
-"Ajudo empresas a parar de perder cliente por demora no WhatsApp. Posso te falar mais?"
-```
-
-> **Regra técnica:** Se a resposta precisar de mais de 2 linhas, **divida em duas chamadas separadas** — nunca em um único bloco.
-
----
-
-### 💰 Bloqueio de Preço (Inviolável)
-
-Qualquer pergunta sobre valores, planos ou pacotes deve receber **exatamente** esta resposta:
-
-```
-"Não tem valor fixo — tudo é feito sob medida.
-O nosso especialista te passa o investimento exato depois de entender o teu negócio."
-```
-
-| Proibido | Correto |
-|---|---|
-| Citar valores específicos | Explicar que é sob medida |
-| Mencionar planos/pacotes | Direcionar para o especialista humano |
-| Dar faixas de preço | Manter a conversa avançando no fluxo |
-
----
-
-### 🔄 Fluxo Obrigatório (4 Etapas)
-
-```
-Etapa 1 — Apresentação de Valor (1ª mensagem)
-   └──► Se o lead pedir mais
-
-Etapa 2 — Demonstração de Valor
-   "Respondo teus clientes na hora, 24h por dia..."
-   "Enquanto tu tá em reunião, to aqui qualificando e vendendo."
-   "WhatsApp lotado, demora na resposta — isso acontece aí?" ◄── 1 pergunta de dor
-   └──► Se o lead confirmar a dor
-
-Etapa 3 — Diferencial e Proposta (CTA)
-   "Meu trabalho é 100% sob medida: não vendo software pra tu configurar."
-   "Quer que eu prepare um projeto sob medida pra tua empresa?"
-   └──► Se o lead confirmar interesse
-
-Etapa 4 — Encerramento DEFINITIVO
-   "Perfeito. Nosso especialista já foi notificado e te chama em instantes. Obrigado!"
-   └──► PARA. O humano assume. Não responda mais.
-```
-
-### ⚡ Gatilhos de Encerramento Antecipado
-
-Se o lead disser qualquer uma dessas frases, **vá direto ao encerramento**:
-
-| Frase do Lead | Ação do Alex |
-|---|---|
-| `"quero"`, `"pode fazer"`, `"sim"` (após CTA) | Encerramento imediato |
-| `"me passa um contato"`, `"quero falar com alguém"` | Encerramento imediato |
-| Pedir objetividade **pela segunda vez** | Encerramento — sem mais diagnóstico |
-
----
-
-## 🔑 Credenciais (IDs de referência — não contém valores reais)
-
-| Credencial | ID no n8n | Uso |
-|---|---|---|
-| Postgres | `MAUejev0zls5AVog` | Sessões e histórico |
-| WAHA API Key | `k1y0l7T56J9x7BKb` | Envio de mensagens |
-| Anthropic | Injetada via ENV | `ANTHROPIC_API_KEY` no container |
-
----
-
-## 📁 Estrutura do Repositório
-
-```
-agbotia-camaleao/
-├── README.md              ← Este arquivo (manual técnico)
-├── BUSINESS_LOGIC.md      ← Regras de negócio e personas
-└── backups/
-    └── workflow_YYYY-MM-DD.json  ← Backups datados do workflow n8n
-```
-
----
-
-## 📋 Links Úteis
-
-- **n8n Workflow:** https://n8n.agbotia.com.br/workflow/6nJBQ4J8SkysTTbx
-- **WAHA Vitrine Dashboard:** http://212.85.2.130:3001/dashboard
-- **WAHA Vitrine API:** http://212.85.2.130:3001/api
-- **Regras de Negócio:** [BUSINESS_LOGIC.md](./BUSINESS_LOGIC.md)
-
----
-
-*Última atualização: 2026-04-25 | Alex 4.0 em produção | Histórico expandido para 20 mensagens*
+*Última atualização: 2026-04-25 | Alex 7.5 em produção | Histórico oficial consolidado*
