@@ -1,0 +1,180 @@
+{
+  "updatedAt": "2026-04-30T21:16:43.850Z",
+  "createdAt": "2026-04-23T15:49:10.550Z",
+  "id": "6nJBQ4J8SkysTTbx",
+  "name": "🦎 Agente Camaleão — Vitrine SaaS",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agente-camaleon",
+        "responseMode": "lastNode"
+      },
+      "id": "node-webhook",
+      "name": "📥 Webhook WAHA Vitrine",
+      "position": [0, 304],
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst isHumanTakeover = $input.first().json.isHumanTakeover || false;\n\nconst fromRaw = body?.payload?.from || '';\nlet phone;\nif (fromRaw.includes('@lid')) {\n  phone = fromRaw;\n} else {\n  phone = fromRaw.replace('@c.us', '').replace('@s.whatsapp.net', '');\n}\n\nconst message = body?.payload?.body || '';\nconst session = body?.payload?.sessionName || 'default';\n\nreturn [{ json: { phone, message, session, isHumanTakeover } }];"
+      },
+      "id": "node-extract",
+      "name": "📋 Extrair Dados WAHA",
+      "position": [240, 304],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT phone, nicho, historico, bot_paused_until FROM agente_camaleon_sessoes WHERE phone = '{{ $json.phone }}' LIMIT 1;"
+      },
+      "id": "node-get-session",
+      "name": "🗃️ Buscar Sessão Usuário",
+      "position": [480, 304],
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "credentials": {
+        "postgres": {
+          "id": "5Uh0LTEOCQy2boJP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const extracted = $('📋 Extrair Dados WAHA').first()?.json || {};\nconst sessionRow = $('🗃️ Buscar Sessão Usuário').first()?.json || null;\n\nconst phone = extracted.phone;\nconst message = extracted.message;\nconst session = extracted.session;\nconst isHumanTakeover = extracted.isHumanTakeover || false;\nconst nicho = sessionRow?.nicho || null;\nconst bot_paused_until = sessionRow?.bot_paused_until || null;\n\nlet historico = [];\nif (sessionRow?.historico) {\n  if (typeof sessionRow.historico === 'string') {\n    try { historico = JSON.parse(sessionRow.historico); } catch(e) { historico = []; }\n  } else if (Array.isArray(sessionRow.historico)) {\n    historico = sessionRow.historico;\n  }\n}\n\nreturn [{ json: { phone, message, session, isHumanTakeover, nicho, historico, bot_paused_until } }];"
+      },
+      "id": "node-merge-session",
+      "name": "🔀 Merge Dados + Sessão",
+      "position": [720, 304],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const extracted = $('📋 Extrair Dados WAHA').first()?.json || {};\nconst sessionRow = $('🗃️ Buscar Sessão Usuário').first()?.json || null;\nconst isHumanTakeover = extracted.isHumanTakeover || false;\nconst botPausedUntil = sessionRow?.bot_paused_until ? new Date(sessionRow.bot_paused_until) : null;\nconst phone = extracted.phone;\nconst message = extracted.message || '';\n\nif (isHumanTakeover) { return [{ json: { phone, message, isPaused: true, humanTakeover: true, mensagens_formatadas: [] } }]; }\nif (botPausedUntil && new Date() < botPausedUntil) { return []; }\n\nlet historico = [];\nif (sessionRow?.historico) {\n  if (typeof sessionRow.historico === 'string') { try { historico = JSON.parse(sessionRow.historico); } catch(e) {} }\n  else if (Array.isArray(sessionRow.historico)) { historico = sessionRow.historico; }\n}\n\nconst RUIDO = ['[ENCERRADO]', '[object Object]', 'undefined', 'null', 'ERROR:'];\nconst historico_limpo = historico.filter(function(h) {\n  return h && h.role && typeof h.content === 'string' && h.content.trim() !== '' &&\n         (h.role === 'user' || h.role === 'assistant') &&\n         !RUIDO.some(function(p) { return h.content.includes(p); });\n});\n\nconst assistantCount = historico_limpo.filter(function(h) { return h.role === 'assistant'; }).length;\nconst msgLower = message.toLowerCase();\nconst isNao = ['nao', 'não', 'ainda nao', 'ainda não', 'agora nao', 'duvida', 'como', 'quem'].some(function(w) { return msgLower.includes(w); });\nconst isSim = ['sim', 'quero', 'pode', 'bora', 'com certeza', 'ok', 'manda', 'interessa'].some(function(w) { return msgLower.includes(w); });\n\nlet stage = 'APRESENTACAO';\nif (assistantCount === 0) { stage = 'APRESENTACAO'; }\nelse if (assistantCount >= 1 && assistantCount <= 2) { if (isNao) stage = 'OBJECAO'; else stage = 'DOUTRINACAO'; }\nelse if (assistantCount === 3) { if (isNao) stage = 'OBJECAO'; else stage = 'FECHAMENTO'; }\nelse { if (isNao || !isSim) stage = 'OBJECAO'; else stage = 'FINALIZACAO'; }\n\nconst stageDirective = '[DIRETIVA DO SISTEMA]\\nVOCE ESTA NA FASE: ' + stage + '\\nVEJA NO SEU ROTEIRO QUAL É O TEXTO EXATO DA FASE ' + stage + ' E RESPONDA USANDO ELE. LEMBRE-SE DO ESPAÇAMENTO OBRIGATÓRIO (DUPLO ENTER).';\n\nconst historico_limitado = historico_limpo.slice(-10);\nconst mensagens = historico_limitado.map(function(h) { return { role: h.role, content: h.content }; });\nmensagens.push({ role: 'user', content: message });\n\nreturn [{ json: { phone, message, session: extracted.session, nicho: sessionRow?.nicho, isPaused: false, mensagens_formatadas: mensagens, stageDirective: stageDirective, current_stage: stage } }];"
+      },
+      "id": "node-format-hist",
+      "name": "📝 Formatar Histórico",
+      "position": [848, 304],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-4-5',\n  max_tokens: 300,\n  temperature: 0.4,\n  system: $('📝 Formatar Histórico').first().json.stageDirective + '\\n\\n---\\n\\n' + \"Voce e o Alex, consultor de automacao.\\n\\nANATOMIA RIGIDA DA MENSAGEM (ESCANEABILIDADE):\\n- MAXIMO de 2 paragrafos por resposta.\\n- Espaco duplo (Enter) obrigatorio antes de qualquer pergunta final.\\n- Proibido enviar blocos densos.\\n\\nREGRAS DE OURO (ALEX 7.5):\\n1. FIM DO EGO: E proibido repetir \\\"Sou consultor em Belem\\\" ou seu cargo completo em todas as mensagens. O lead ja sabe quem voce e. Use: \\\"Como consultor em automacao, meu foco e...\\\" para contextualizar quando necessario.\\n2. PROIBICAO DE TERMOS: Nunca use \\\"Atendimento Humano\\\". Use exclusivamente: \\\"Consultor\\\", \\\"Especialista\\\" ou \\\"Time Tecnico\\\".\\n3. CENSURA DE TAGS: Voce esta terminantemente proibido de exibir colchetes, diretivas tecnicas ou nomes de fases para o cliente. Sua resposta deve ser limpa.\\n4. ROTACAO DE CTA (OBRIGATORIO): Se o lead hesitar, tiver duvidas ou negar o projeto, VOCE DEVE responder a duvida e usar um CTA DIFERENTE do que voce usou na ultima mensagem. Nunca repita o mesmo convite em sequencia.\\n\\n[FASE: APRESENTACAO]\\n\\\"Como consultor em automacao, meu foco e criar solucoes personalizadas que realmente convertem para o seu negocio.\\n\\nPosso te falar mais sobre meu trabalho?\\\"\\n\\n[FASE: DOUTRINACAO]\\n\\\"Respondo teus clientes na hora, 24h por dia, sem faltar. Enquanto voce dorme ou esta em reuniao, a IA ta la qualificando e vendendo para voce.\\n\\nJa perdeu venda por demora no retorno ou cliente que desistiu porque ninguem respondeu na hora?\\\"\\n\\n[FASE: FECHAMENTO]\\n\\\"O meu trabalho e 100% manual e sob medida: treino a IA com os dados da sua empresa para ela falar como o seu melhor vendedor.\\n\\nQuer que eu prepare um projeto sob medida para a sua empresa?\\\"\\n\\n[FASE: OBJECAO / DUVIDA]\\n1) Responda a duvida do lead de forma MUITO breve e direta (max 1 paragrafo).\\n2) Use um espaco duplo e escolha UM DESTES CTAs (ALTERNANDO SEMPRE):\\n   - \\\"Se tiver alguma duvida especifica, posso te encaminhar agora para o nosso consultor tirar suas duvidas. O que acha?\\\"\\n   - \\\"Podemos seguir com o projeto sob medida ou voce prefere conversar com um especialista antes para entender melhor os detalhes?\\\"\\n   - \\\"Faria sentido falarmos com o nosso consultor para alinhar como isso funcionaria exatamente no seu negocio?\\\"\\n\\n[FASE: FINALIZACAO]\\n\\\"Perfeito, nosso especialista ja foi notificado e te chamara em instantes para alinhar os detalhes. Obrigado! [ENCERRADO]\\\"\",\n  messages: $('📝 Formatar Histórico').first().json.mensagens_formatadas\n}) }}",
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages"
+      },
+      "id": "node-ia-mkt",
+      "name": "📡 Chamar Claude MKT",
+      "position": [1200, 320],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4
+    },
+    {
+      "parameters": {
+        "jsCode": "let aiResponseRaw = '';\ntry { aiResponseRaw = aiResponseRaw || $('📡 Chamar Claude MKT').first()?.json?.content?.[0]?.text; } catch (e) {}\naiResponseRaw = (aiResponseRaw || '').trim();\nconst phone = $('📋 Extrair Dados WAHA').first().json.phone;\nconst isEncerrado = aiResponseRaw.includes('[ENCERRADO]');\nlet textoLimpo = aiResponseRaw.replace(/\\[.*?\\]/g, '').trim();\nif (!textoLimpo || textoLimpo.length < 5) {\n    if (aiResponseRaw.length > 10 && !isEncerrado) { textoLimpo = aiResponseRaw.replace(/\\[ENCERRADO\\]/g, '').trim(); }\n    else { textoLimpo = 'Entendido, vou verificar isso para você.'; }\n}\nreturn [{ json: { isEncerrado, textoLimpo, phone } }];"
+      },
+      "id": "node-filter-encerrado",
+      "name": "🛑 Filtrar Encerrado",
+      "position": [1560, 160],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-encerrado",
+              "leftValue": "={{ $json.isEncerrado }}",
+              "operator": { "operation": "equals", "type": "boolean" },
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-encerrado",
+      "name": "🔀 Lead Encerrado?",
+      "position": [1760, 160],
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE agente_camaleon_sessoes\nSET bot_paused_until = NOW() + INTERVAL '24 hours', updated_at = NOW()\nWHERE phone = $1;",
+        "options": { "queryReplacement": "={{ [$json.phone] }}" }
+      },
+      "id": "node-pausar-bot",
+      "name": "⏸️ Pausar Bot 24h",
+      "position": [1960, 80],
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "credentials": {
+        "postgres": {
+          "id": "5Uh0LTEOCQy2boJP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "bodyParameters": {
+          "parameters": [
+            { "name": "session", "value": "default" },
+            { "name": "chatId", "value": "5591983682421@c.us" },
+            { "name": "text", "value": "={{ '🔥 LEAD QUALIFICADO\\n📱 Número: ' + $json.phone + '\\n\\nAguarda seu contato agora!' }}" }
+          ]
+        },
+        "method": "POST",
+        "url": "http://212.85.2.130:3001/api/sendText"
+      },
+      "id": "node-alertar-dono",
+      "name": "🔔 Alertar Dono",
+      "position": [1960, 200],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "bodyParameters": {
+          "parameters": [
+            { "name": "session", "value": "default" },
+            { "name": "chatId", "value": "={{ $json.phone + '@c.us' }}" },
+            { "name": "text", "value": "={{ $json.textoLimpo }}" }
+          ]
+        },
+        "method": "POST",
+        "url": "http://212.85.2.130:3001/api/sendText"
+      },
+      "id": "node-send-text",
+      "name": "📤 Enviar Resposta WAHA",
+      "position": [1960, 320],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4
+    }
+  ],
+  "connections": {
+    "node-webhook": { "main": [[{ "node": "node-extract", "type": "main", "index": 0 }]] },
+    "node-extract": { "main": [[{ "node": "node-get-session", "type": "main", "index": 0 }]] },
+    "node-get-session": { "main": [[{ "node": "node-merge-session", "type": "main", "index": 0 }]] },
+    "node-merge-session": { "main": [[{ "node": "node-format-hist", "type": "main", "index": 0 }]] },
+    "node-format-hist": { "main": [[{ "node": "node-ia-mkt", "type": "main", "index": 0 }]] },
+    "node-ia-mkt": { "main": [[{ "node": "node-filter-encerrado", "type": "main", "index": 0 }]] },
+    "node-filter-encerrado": { "main": [[{ "node": "node-if-encerrado", "type": "main", "index": 0 }]] },
+    "node-if-encerrado": {
+      "main": [
+        [{ "node": "node-pausar-bot", "type": "main", "index": 0 }],
+        [{ "node": "node-send-text", "type": "main", "index": 0 }]
+      ]
+    },
+    "node-pausar-bot": { "main": [[{ "node": "node-alertar-dono", "type": "main", "index": 0 }]] }
+  }
+}
