@@ -1,180 +1,1081 @@
 {
-  "updatedAt": "2026-04-30T21:16:43.850Z",
-  "createdAt": "2026-04-23T15:49:10.550Z",
-  "id": "6nJBQ4J8SkysTTbx",
-  "name": "🦎 Agente Camaleão — Vitrine SaaS",
-  "active": true,
-  "nodes": [
-    {
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "agente-camaleon",
-        "responseMode": "lastNode"
-      },
-      "id": "node-webhook",
-      "name": "📥 Webhook WAHA Vitrine",
-      "position": [0, 304],
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2.1
-    },
-    {
-      "parameters": {
-        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst isHumanTakeover = $input.first().json.isHumanTakeover || false;\n\nconst fromRaw = body?.payload?.from || '';\nlet phone;\nif (fromRaw.includes('@lid')) {\n  phone = fromRaw;\n} else {\n  phone = fromRaw.replace('@c.us', '').replace('@s.whatsapp.net', '');\n}\n\nconst message = body?.payload?.body || '';\nconst session = body?.payload?.sessionName || 'default';\n\nreturn [{ json: { phone, message, session, isHumanTakeover } }];"
-      },
-      "id": "node-extract",
-      "name": "📋 Extrair Dados WAHA",
-      "position": [240, 304],
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT phone, nicho, historico, bot_paused_until FROM agente_camaleon_sessoes WHERE phone = '{{ $json.phone }}' LIMIT 1;"
-      },
-      "id": "node-get-session",
-      "name": "🗃️ Buscar Sessão Usuário",
-      "position": [480, 304],
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2,
-      "credentials": {
-        "postgres": {
-          "id": "5Uh0LTEOCQy2boJP",
-          "name": "Postgres account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "jsCode": "const extracted = $('📋 Extrair Dados WAHA').first()?.json || {};\nconst sessionRow = $('🗃️ Buscar Sessão Usuário').first()?.json || null;\n\nconst phone = extracted.phone;\nconst message = extracted.message;\nconst session = extracted.session;\nconst isHumanTakeover = extracted.isHumanTakeover || false;\nconst nicho = sessionRow?.nicho || null;\nconst bot_paused_until = sessionRow?.bot_paused_until || null;\n\nlet historico = [];\nif (sessionRow?.historico) {\n  if (typeof sessionRow.historico === 'string') {\n    try { historico = JSON.parse(sessionRow.historico); } catch(e) { historico = []; }\n  } else if (Array.isArray(sessionRow.historico)) {\n    historico = sessionRow.historico;\n  }\n}\n\nreturn [{ json: { phone, message, session, isHumanTakeover, nicho, historico, bot_paused_until } }];"
-      },
-      "id": "node-merge-session",
-      "name": "🔀 Merge Dados + Sessão",
-      "position": [720, 304],
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2
-    },
-    {
-      "parameters": {
-        "jsCode": "const extracted = $('📋 Extrair Dados WAHA').first()?.json || {};\nconst sessionRow = $('🗃️ Buscar Sessão Usuário').first()?.json || null;\nconst isHumanTakeover = extracted.isHumanTakeover || false;\nconst botPausedUntil = sessionRow?.bot_paused_until ? new Date(sessionRow.bot_paused_until) : null;\nconst phone = extracted.phone;\nconst message = extracted.message || '';\n\nif (isHumanTakeover) { return [{ json: { phone, message, isPaused: true, humanTakeover: true, mensagens_formatadas: [] } }]; }\nif (botPausedUntil && new Date() < botPausedUntil) { return []; }\n\nlet historico = [];\nif (sessionRow?.historico) {\n  if (typeof sessionRow.historico === 'string') { try { historico = JSON.parse(sessionRow.historico); } catch(e) {} }\n  else if (Array.isArray(sessionRow.historico)) { historico = sessionRow.historico; }\n}\n\nconst RUIDO = ['[ENCERRADO]', '[object Object]', 'undefined', 'null', 'ERROR:'];\nconst historico_limpo = historico.filter(function(h) {\n  return h && h.role && typeof h.content === 'string' && h.content.trim() !== '' &&\n         (h.role === 'user' || h.role === 'assistant') &&\n         !RUIDO.some(function(p) { return h.content.includes(p); });\n});\n\nconst assistantCount = historico_limpo.filter(function(h) { return h.role === 'assistant'; }).length;\nconst msgLower = message.toLowerCase();\nconst isNao = ['nao', 'não', 'ainda nao', 'ainda não', 'agora nao', 'duvida', 'como', 'quem'].some(function(w) { return msgLower.includes(w); });\nconst isSim = ['sim', 'quero', 'pode', 'bora', 'com certeza', 'ok', 'manda', 'interessa'].some(function(w) { return msgLower.includes(w); });\n\nlet stage = 'APRESENTACAO';\nif (assistantCount === 0) { stage = 'APRESENTACAO'; }\nelse if (assistantCount >= 1 && assistantCount <= 2) { if (isNao) stage = 'OBJECAO'; else stage = 'DOUTRINACAO'; }\nelse if (assistantCount === 3) { if (isNao) stage = 'OBJECAO'; else stage = 'FECHAMENTO'; }\nelse { if (isNao || !isSim) stage = 'OBJECAO'; else stage = 'FINALIZACAO'; }\n\nconst stageDirective = '[DIRETIVA DO SISTEMA]\\nVOCE ESTA NA FASE: ' + stage + '\\nVEJA NO SEU ROTEIRO QUAL É O TEXTO EXATO DA FASE ' + stage + ' E RESPONDA USANDO ELE. LEMBRE-SE DO ESPAÇAMENTO OBRIGATÓRIO (DUPLO ENTER).';\n\nconst historico_limitado = historico_limpo.slice(-10);\nconst mensagens = historico_limitado.map(function(h) { return { role: h.role, content: h.content }; });\nmensagens.push({ role: 'user', content: message });\n\nreturn [{ json: { phone, message, session: extracted.session, nicho: sessionRow?.nicho, isPaused: false, mensagens_formatadas: mensagens, stageDirective: stageDirective, current_stage: stage } }];"
-      },
-      "id": "node-format-hist",
-      "name": "📝 Formatar Histórico",
-      "position": [848, 304],
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2
-    },
-    {
-      "parameters": {
-        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-4-5',\n  max_tokens: 300,\n  temperature: 0.4,\n  system: $('📝 Formatar Histórico').first().json.stageDirective + '\\n\\n---\\n\\n' + \"Voce e o Alex, consultor de automacao.\\n\\nANATOMIA RIGIDA DA MENSAGEM (ESCANEABILIDADE):\\n- MAXIMO de 2 paragrafos por resposta.\\n- Espaco duplo (Enter) obrigatorio antes de qualquer pergunta final.\\n- Proibido enviar blocos densos.\\n\\nREGRAS DE OURO (ALEX 7.5):\\n1. FIM DO EGO: E proibido repetir \\\"Sou consultor em Belem\\\" ou seu cargo completo em todas as mensagens. O lead ja sabe quem voce e. Use: \\\"Como consultor em automacao, meu foco e...\\\" para contextualizar quando necessario.\\n2. PROIBICAO DE TERMOS: Nunca use \\\"Atendimento Humano\\\". Use exclusivamente: \\\"Consultor\\\", \\\"Especialista\\\" ou \\\"Time Tecnico\\\".\\n3. CENSURA DE TAGS: Voce esta terminantemente proibido de exibir colchetes, diretivas tecnicas ou nomes de fases para o cliente. Sua resposta deve ser limpa.\\n4. ROTACAO DE CTA (OBRIGATORIO): Se o lead hesitar, tiver duvidas ou negar o projeto, VOCE DEVE responder a duvida e usar um CTA DIFERENTE do que voce usou na ultima mensagem. Nunca repita o mesmo convite em sequencia.\\n\\n[FASE: APRESENTACAO]\\n\\\"Como consultor em automacao, meu foco e criar solucoes personalizadas que realmente convertem para o seu negocio.\\n\\nPosso te falar mais sobre meu trabalho?\\\"\\n\\n[FASE: DOUTRINACAO]\\n\\\"Respondo teus clientes na hora, 24h por dia, sem faltar. Enquanto voce dorme ou esta em reuniao, a IA ta la qualificando e vendendo para voce.\\n\\nJa perdeu venda por demora no retorno ou cliente que desistiu porque ninguem respondeu na hora?\\\"\\n\\n[FASE: FECHAMENTO]\\n\\\"O meu trabalho e 100% manual e sob medida: treino a IA com os dados da sua empresa para ela falar como o seu melhor vendedor.\\n\\nQuer que eu prepare um projeto sob medida para a sua empresa?\\\"\\n\\n[FASE: OBJECAO / DUVIDA]\\n1) Responda a duvida do lead de forma MUITO breve e direta (max 1 paragrafo).\\n2) Use um espaco duplo e escolha UM DESTES CTAs (ALTERNANDO SEMPRE):\\n   - \\\"Se tiver alguma duvida especifica, posso te encaminhar agora para o nosso consultor tirar suas duvidas. O que acha?\\\"\\n   - \\\"Podemos seguir com o projeto sob medida ou voce prefere conversar com um especialista antes para entender melhor os detalhes?\\\"\\n   - \\\"Faria sentido falarmos com o nosso consultor para alinhar como isso funcionaria exatamente no seu negocio?\\\"\\n\\n[FASE: FINALIZACAO]\\n\\\"Perfeito, nosso especialista ja foi notificado e te chamara em instantes para alinhar os detalhes. Obrigado! [ENCERRADO]\\\"\",\n  messages: $('📝 Formatar Histórico').first().json.mensagens_formatadas\n}) }}",
-        "method": "POST",
-        "url": "https://api.anthropic.com/v1/messages"
-      },
-      "id": "node-ia-mkt",
-      "name": "📡 Chamar Claude MKT",
-      "position": [1200, 320],
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4
-    },
-    {
-      "parameters": {
-        "jsCode": "let aiResponseRaw = '';\ntry { aiResponseRaw = aiResponseRaw || $('📡 Chamar Claude MKT').first()?.json?.content?.[0]?.text; } catch (e) {}\naiResponseRaw = (aiResponseRaw || '').trim();\nconst phone = $('📋 Extrair Dados WAHA').first().json.phone;\nconst isEncerrado = aiResponseRaw.includes('[ENCERRADO]');\nlet textoLimpo = aiResponseRaw.replace(/\\[.*?\\]/g, '').trim();\nif (!textoLimpo || textoLimpo.length < 5) {\n    if (aiResponseRaw.length > 10 && !isEncerrado) { textoLimpo = aiResponseRaw.replace(/\\[ENCERRADO\\]/g, '').trim(); }\n    else { textoLimpo = 'Entendido, vou verificar isso para você.'; }\n}\nreturn [{ json: { isEncerrado, textoLimpo, phone } }];"
-      },
-      "id": "node-filter-encerrado",
-      "name": "🛑 Filtrar Encerrado",
-      "position": [1560, 160],
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "combinator": "and",
-          "conditions": [
-            {
-              "id": "cond-encerrado",
-              "leftValue": "={{ $json.isEncerrado }}",
-              "operator": { "operation": "equals", "type": "boolean" },
-              "rightValue": true
+    "id": "6nJBQ4J8SkysTTbx",
+    "name": "Agente Camaleão 9.1 - Estabilizado",
+    "nodes": [
+        {
+            "parameters": {
+                "httpMethod": "POST",
+                "path": "agente-camaleon",
+                "responseMode": "lastNode",
+                "options": {}
+            },
+            "id": "node-webhook",
+            "name": "📩 Webhook WAHA Vitrine",
+            "position": [
+                0,
+                304
+            ],
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2.1,
+            "webhookId": "0fb1ef4e-9a5c-45ee-af70-3e05becd1426"
+        },
+        {
+            "parameters": {
+                "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst isHumanTakeover = $input.first().json.isHumanTakeover || false;\n\nconst fromRaw = body?.payload?.from || '';\nlet phone;\nif (fromRaw.includes('@lid')) {\n  phone = fromRaw;\n} else {\n  phone = fromRaw.replace('@c.us', '').replace('@s.whatsapp.net', '');\n}\n\nconst message = body?.payload?.body || '';\nconst session = body?.payload?.sessionName || 'default';\n\nreturn [{ json: { phone, message, session, isHumanTakeover } }];"
+            },
+            "id": "node-extract",
+            "name": "📋 Extrair Dados WAHA",
+            "position": [
+                240,
+                304
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "=SELECT phone, nicho, historico, bot_paused_until FROM agente_camaleon_sessoes WHERE phone = '{{ $json.phone }}' LIMIT 1;",
+                "options": {}
+            },
+            "id": "node-get-session",
+            "name": "🗃️ Buscar Sessão Usuário",
+            "position": [
+                480,
+                304
+            ],
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2,
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres DB Fotografia"
+                }
             }
-          ]
-        }
-      },
-      "id": "node-if-encerrado",
-      "name": "🔀 Lead Encerrado?",
-      "position": [1760, 160],
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "UPDATE agente_camaleon_sessoes\nSET bot_paused_until = NOW() + INTERVAL '24 hours', updated_at = NOW()\nWHERE phone = $1;",
-        "options": { "queryReplacement": "={{ [$json.phone] }}" }
-      },
-      "id": "node-pausar-bot",
-      "name": "⏸️ Pausar Bot 24h",
-      "position": [1960, 80],
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "credentials": {
-        "postgres": {
-          "id": "5Uh0LTEOCQy2boJP",
-          "name": "Postgres account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "bodyParameters": {
-          "parameters": [
-            { "name": "session", "value": "default" },
-            { "name": "chatId", "value": "5591983682421@c.us" },
-            { "name": "text", "value": "={{ '🔥 LEAD QUALIFICADO\\n📱 Número: ' + $json.phone + '\\n\\nAguarda seu contato agora!' }}" }
-          ]
         },
-        "method": "POST",
-        "url": "http://212.85.2.130:3001/api/sendText"
-      },
-      "id": "node-alertar-dono",
-      "name": "🔔 Alertar Dono",
-      "position": [1960, 200],
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2
-    },
-    {
-      "parameters": {
-        "bodyParameters": {
-          "parameters": [
-            { "name": "session", "value": "default" },
-            { "name": "chatId", "value": "={{ $json.phone + '@c.us' }}" },
-            { "name": "text", "value": "={{ $json.textoLimpo }}" }
-          ]
+        {
+            "parameters": {
+                "jsCode": "const extracted = $('📋 Extrair Dados WAHA').first()?.json || {};\nconst sessionRow = $('🗃️ Buscar Sessão Usuário').first()?.json || null;\n\nconst phone = extracted.phone;\nconst message = extracted.message;\nconst session = extracted.session;\nconst isHumanTakeover = extracted.isHumanTakeover || false;\nconst nicho = sessionRow?.nicho || null;\nconst bot_paused_until = sessionRow?.bot_paused_until || null;\n\n// Histórico pode vir como string JSON ou como objeto parsed do Postgres\nlet historico = [];\nif (sessionRow?.historico) {\n  if (typeof sessionRow.historico === 'string') {\n    try { historico = JSON.parse(sessionRow.historico); } catch(e) { historico = []; }\n  } else if (Array.isArray(sessionRow.historico)) {\n    historico = sessionRow.historico;\n  }\n}\n\nreturn [{ json: { phone, message, session, isHumanTakeover, nicho, historico, bot_paused_until } }];"
+            },
+            "id": "node-merge-session",
+            "name": "🔄 Merge Dados + Sessão",
+            "position": [
+                720,
+                304
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
         },
-        "method": "POST",
-        "url": "http://212.85.2.130:3001/api/sendText"
-      },
-      "id": "node-send-text",
-      "name": "📤 Enviar Resposta WAHA",
-      "position": [1960, 320],
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4
+        {
+            "parameters": {
+                "conditions": {
+                    "combinator": "and",
+                    "conditions": [
+                        {
+                            "id": "cond-nicho",
+                            "leftValue": "={{ $json.nicho }}",
+                            "operator": {
+                                "operation": "notEmpty",
+                                "singleValue": true,
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "options": {
+                        "caseSensitive": false,
+                        "leftValue": "",
+                        "typeValidation": "loose"
+                    }
+                },
+                "options": {}
+            },
+            "id": "node-if-nicho",
+            "name": "❓ Tem Nicho Selecionado?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                960,
+                304
+            ],
+            "disabled": true
+        },
+        {
+            "parameters": {
+                "rules": {
+                    "values": [
+                        {
+                            "conditions": {
+                                "combinator": "and",
+                                "conditions": [
+                                    {
+                                        "leftValue": "={{ $json.message.trim() }}",
+                                        "operator": {
+                                            "operation": "equals",
+                                            "type": "string"
+                                        },
+                                        "rightValue": "1"
+                                    }
+                                ]
+                            },
+                            "renameOutput": true,
+                            "outputKey": "Estetica"
+                        },
+                        {
+                            "conditions": {
+                                "combinator": "and",
+                                "conditions": [
+                                    {
+                                        "leftValue": "={{ $json.message.trim() }}",
+                                        "operator": {
+                                            "operation": "equals",
+                                            "type": "string"
+                                        },
+                                        "rightValue": "2"
+                                    }
+                                ]
+                            },
+                            "renameOutput": true,
+                            "outputKey": "Saude"
+                        },
+                        {
+                            "conditions": {
+                                "combinator": "and",
+                                "conditions": [
+                                    {
+                                        "leftValue": "={{ $json.message.trim() }}",
+                                        "operator": {
+                                            "operation": "equals",
+                                            "type": "string"
+                                        },
+                                        "rightValue": "3"
+                                    }
+                                ]
+                            },
+                            "renameOutput": true,
+                            "outputKey": "Marketing"
+                        }
+                    ]
+                },
+                "options": {
+                    "fallbackOutput": "extra"
+                }
+            },
+            "id": "node-switch-sel",
+            "name": "🔢 Switch Seleção de Nicho",
+            "type": "n8n-nodes-base.switch",
+            "typeVersion": 3,
+            "position": [
+                1200,
+                480
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendText",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"session\": \"{{ $json.session }}\",\n  \"chatId\": \"{{ $json.phone }}@c.us\",\n  \"text\": \"👋 Olá! Bem-vindo ao *Agente Camaleão*!\\n\\n🦎 Sou um assistente inteligente. Para te atender melhor, escolha o perfil:\\n\\n*1️⃣* — Clínica Estética\\n*2️⃣* — Saúde / Medicina\\n*3️⃣* — Marketing Digital\\n\\nDigite o número:\"\n}",
+                "options": {},
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-menu",
+            "name": "📋 Enviar Menu de Nichos",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1440,
+                640
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "=INSERT INTO agente_camaleon_sessoes (phone, nicho, historico, updated_at) VALUES ('{{ $json.phone }}', 'estetica', '[]', NOW()) ON CONFLICT (phone) DO UPDATE SET nicho = 'estetica', historico = '[]', updated_at = NOW();",
+                "options": {}
+            },
+            "id": "node-save-est",
+            "name": "💾 Salvar Nicho Estética",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2,
+            "position": [
+                1440,
+                208
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres DB Fotografia"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "=INSERT INTO agente_camaleon_sessoes (phone, nicho, historico, updated_at) VALUES ('{{ $json.phone }}', 'saude', '[]', NOW()) ON CONFLICT (phone) DO UPDATE SET nicho = 'saude', historico = '[]', updated_at = NOW();",
+                "options": {}
+            },
+            "id": "node-save-sau",
+            "name": "💾 Salvar Nicho Saúde",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2,
+            "position": [
+                1440,
+                368
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres DB Fotografia"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "=INSERT INTO agente_camaleon_sessoes (phone, nicho, historico, updated_at) VALUES ('{{ $json.phone }}', 'marketing', '[]', NOW()) ON CONFLICT (phone) DO UPDATE SET nicho = 'marketing', historico = '[]', updated_at = NOW();",
+                "options": {}
+            },
+            "id": "node-save-mkt",
+            "name": "💾 Salvar Nicho Marketing",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2,
+            "position": [
+                1440,
+                528
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres DB Fotografia"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "rules": {
+                    "values": [
+                        {
+                            "conditions": {
+                                "combinator": "and",
+                                "conditions": [
+                                    {
+                                        "leftValue": "={{ $json.nicho }}",
+                                        "operator": {
+                                            "operation": "equals",
+                                            "type": "string"
+                                        },
+                                        "rightValue": "estetica"
+                                    }
+                                ]
+                            },
+                            "renameOutput": true,
+                            "outputKey": "Estetica"
+                        },
+                        {
+                            "conditions": {
+                                "combinator": "and",
+                                "conditions": [
+                                    {
+                                        "leftValue": "={{ $json.nicho }}",
+                                        "operator": {
+                                            "operation": "equals",
+                                            "type": "string"
+                                        },
+                                        "rightValue": "saude"
+                                    }
+                                ]
+                            },
+                            "renameOutput": true,
+                            "outputKey": "Saude"
+                        },
+                        {
+                            "conditions": {
+                                "combinator": "and",
+                                "conditions": [
+                                    {
+                                        "leftValue": "={{ $json.nicho }}",
+                                        "operator": {
+                                            "operation": "equals",
+                                            "type": "string"
+                                        },
+                                        "rightValue": "marketing"
+                                    }
+                                ]
+                            },
+                            "renameOutput": true,
+                            "outputKey": "Marketing"
+                        }
+                    ]
+                },
+                "options": {
+                    "fallbackOutput": "extra"
+                }
+            },
+            "id": "node-switch-nicho",
+            "name": "🦎 Switch Nicho Ativo",
+            "type": "n8n-nodes-base.switch",
+            "typeVersion": 3,
+            "position": [
+                960,
+                128
+            ],
+            "disabled": true
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "https://api.anthropic.com/v1/messages",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "x-api-key",
+                            "value": "YOUR_ANTHROPIC_KEY"
+                        },
+                        {
+                            "name": "anthropic-version",
+                            "value": "2023-06-01"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-4-5-20250929',\n  max_tokens: 300,\n  temperature: 0.4,\n  system: $('📝 Formatar Histórico').first().json.stageDirective + '\\n\\n---\\n\\n' + \"Voce e a Sofia, consultora de estetica da Agbotia.\\n\\nANATOMIA RIGIDA DA MENSAGEM (ESCANEABILIDADE):\\n- MAXIMO de 2 paragrafos por resposta.\\n- Espaco duplo (Enter) obrigatorio antes de qualquer pergunta final.\\n- Proibido enviar blocos densos.\\n\\nREGRAS DE OURO (ALEX 9.0):\\n1. ESCUTA ATIVA PRIORITARIA: Se o usuario aceitar, pare de vender e inicie a coleta dos dados.\\n2. NUNCA DE PRECOS: \\\"O valor depende da avaliacao — que e gratuita.\\\"\\n3. CENSURA DE TAGS: Voce esta terminantemente proibido de exibir colchetes ou diretivas tecnicas para o cliente.\\n\\n[FASE: APRESENTACAO]\\n\\\"Oi! Sou a Sofia, consultora de estetica. Aqui a gente ajuda quem quer se cuidar a encontrar o procedimento certo e ainda ganhar uma avaliacao gratuita.\\n\\nPosso te contar como funciona?\\\"\\n\\n[FASE: DOUTRINACAO / IDENTIFICACAO]\\n\\\"Nossos procedimentos sao feitos com equipamentos de ponta para garantir os melhores resultados.\\n\\nQual procedimento voce tem mais vontade de fazer hoje?\\\"\\n\\n[FASE: FECHAMENTO]\\n\\\"Nossas especialistas adorariam te avaliar para montar um plano sob medida para o que voce busca.\\n\\nQue tal agendar uma avaliacao gratuita?\\\"\\n\\n[FASE: COLETA]\\n\\\"Excelente escolha! Para finalizarmos o seu agendamento.\\n\\nQual o seu nome completo e melhor e-mail de contato?\\\"\\n\\n[FASE: ENTREGA_PDF]\\n\\\"Tudo anotado! O nosso team ja foi notificado.\\n\\nEles vao entrar em contato com voce em instantes para confirmar o horario. Posso ajudar com mais alguma coisa?\\\"\\n\\n[FASE: OBJECAO / DUVIDA]\\nResponda a duvida e alterne entre:\\n- \\\"Gostaria de conversar direto com nossa especialista antes?\\\"\\n- \\\"Podemos agendar a avaliacao ou prefere tirar mais duvidas com o time tecnico?\\\"\\n\",\n  messages: $('📝 Formatar Histórico').first().json.mensagens_formatadas\n}) }}",
+                "options": {}
+            },
+            "id": "node-ia-est",
+            "name": "📡 Chamar Claude EST",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1200,
+                0
+            ],
+            "disabled": true
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "https://api.anthropic.com/v1/messages",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "x-api-key",
+                            "value": "YOUR_ANTHROPIC_KEY"
+                        },
+                        {
+                            "name": "anthropic-version",
+                            "value": "2023-06-01"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={{ JSON.stringify({\n  model: 'claude-3-5-haiku-20241022',\n  max_tokens: 300,\n  temperature: 0.4,\n  system: $('📝 Formatar Histórico').first().json.stageDirective + '\\n\\n---\\n\\n' + \"Voce e a Ana, secretaria de clinica medica da Agbotia.\\n\\nANATOMIA RIGIDA DA MENSAGEM (ESCANEABILIDADE):\\n- MAXIMO de 2 paragrafos por resposta.\\n- Espaco duplo (Enter) obrigatorio antes de qualquer pergunta final.\\n- Proibido enviar blocos densos.\\n\\nREGRAS DE OURO (ALEX 8.0):\\n1. FIM DO EGO: E proibido repetir seu cargo em todas as mensagens.\\n2. PROIBICAO DE TERMOS: Nunca use \\\"Atendimento Humano\\\". Use exclusivamente: \\\"Consultor\\\", \\\"Especialista\\\" ou \\\"Time Tecnico\\\".\\n3. CENSURA DE TAGS: Voce esta terminantemente proibido de exibir colchetes, diretivas tecnicas ou nomes de fases para o cliente. Sua resposta deve ser limpa.\\n4. ROTACAO DE CTA: Nunca repita a mesma pergunta em sequencia.\\n\\n[FASE: APRESENTACAO]\\n\\\"Oi! Sou a Ana, aqui da clinica. Posso te ajudar a agendar uma consulta.\\n\\nQual especialidade voce precisa?\\\"\\n\\n[FASE: DOUTRINACAO / IDENTIFICACAO]\\n\\\"Vou verificar a agenda para essa especialidade.\\n\\nVoce possui algum convenio medico ou seria atendimento particular?\\\"\\n\\n[FASE: FECHAMENTO / AGENDAMENTO]\\n\\\"Obrigada pelas informacoes. Nosso time vai preparar os melhores horarios para voce.\\n\\nPosso pedir para um de nossos especialistas te chamar aqui em instantes para confirmar os detalhes do agendamento?\\\"\\n\\n[FASE: OBJECAO / DUVIDA / URGENCIAS]\\nPara urgencias, oriente a ligar 192.\\nSe houver hesitacao, responda de forma muito breve e use um CTA alternativo:\\n- \\\"Se preferir, posso pedir para o nosso especialista te chamar e explicar certinho. O que acha?\\\"\\n- \\\"Gostaria de falar com nossa equipe tecnica antes de agendarmos?\\\"\\n\",\n  messages: $('📝 Formatar Histórico').first().json.mensagens_formatadas\n}) }}",
+                "options": {}
+            },
+            "id": "node-ia-sau",
+            "name": "📡 Chamar Claude SAU",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1200,
+                160
+            ],
+            "disabled": true
+        },
+        {
+            "parameters": {
+                "authentication": "none",
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "x-api-key",
+                            "value": "YOUR_ANTHROPIC_KEY"
+                        },
+                        {
+                            "name": "anthropic-version",
+                            "value": "2023-06-01"
+                        }
+                    ]
+                },
+                "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-4-5',\n  max_tokens: 300,\n  temperature: 0.4,\n  system: $('📝 Formatar Histórico').first().json.stageDirective + '\\n\\n---\\n\\n' + \"Voce e o Alex, consultor de automacao.\\n\\nANATOMIA RIGIDA DA MENSAGEM (ESCANEABILIDADE):\\n- MAXIMO de 2 paragrafos por resposta.\\n- Espaco duplo (Enter) obrigatorio antes de qualquer pergunta final.\\n- Proibido enviar blocos densos.\\n\\nREGRAS DE OURO (ALEX 7.5):\\n1. FIM DO EGO: E proibido repetir \\\"Sou consultor em Belem\\\" ou seu cargo completo em todas as mensagens. O lead ja sabe quem voce e. Use: \\\"Como consultor em automacao, meu foco e...\\\" para contextualizar quando necessario.\\n2. PROIBICAO DE TERMOS: Nunca use \\\"Atendimento Humano\\\". Use exclusively: \\\"Consultor\\\", \\\"Especialista\\\" ou \\\"Time Tecnico\\\".\\n3. CENSURA DE TAGS: Voce esta terminantemente proibido de exibir colchetes, diretivas tecnicas ou nomes de fases para o cliente. Sua resposta deve ser limpa.\\n4. ROTACAO DE CTA (OBRIGATORIO): Se o lead hesitar, tiver duvidas ou negar o projeto, VOCE DEVE responder a duvida e usar um CTA DIFERENTE do que voce usou na ultima mensagem. Nunca repita o mesmo convite em sequencia.\\n\\n[FASE: APRESENTACAO]\\n\\\"Como consultor em automacao, meu foco e criar solucoes personalizadas que realmente convertem para o seu negocio.\\n\\nPosso te falar mais sobre meu trabalho?\\\"\\n\\n[FASE: DOUTRINACAO]\\n\\\"Respondo teus clientes na hora, 24h por dia, sem faltar. Enquanto voce dorme ou esta em reuniao, a IA ta la qualificando e vendendo para voce.\\n\\nJa perdeu venda por demora no retorno ou cliente que desistiu porque ninguem respondeu na hora?\\\"\\n\\n[FASE: FECHAMENTO]\\n\\\"O meu trabalho e 100% manual e sob medida: treino a IA com os dados da sua empresa para ela falar como o seu melhor vendedor.\\n\\nQuer que eu prepare um projeto sob medida para a sua empresa?\\\"\\n\\n[FASE: OBJECAO / DUVIDA]\\n1) Responda a duvida do lead de forma MUITO breve e direta (max 1 paragrafo).\\n2) Use um espaco duplo e escolha UM DESTES CTAs (ALTERNANDO SEMPRE):\\n   - \\\"Se tiver alguma duvida especifica, posso te encaminhar agora para o nosso consultor tirar suas duvidas. O que acha?\\\"\\n   - \\\"Podemos seguir com o projeto sob medida ou voce prefere conversar com um especialista antes para entender melhor os detalhes?\\\"\\n   - \\\"Faria sentido falarmos com o nosso consultor para alinhar como isso funcionaria exatamente no seu negocio?\\\"\\n\\n[FASE: FINALIZACAO]\\n\\\"Perfeito, nosso especialista ja foi notificado e te chamara em instantes para alinhar os detalhes. Obrigado! [ENCERRADO]\\\"\",\n  messages: $('📝 Formatar Histórico').first().json.mensagens_formatadas\n}) }}",
+                "method": "POST",
+                "options": {},
+                "sendBody": true,
+                "sendHeaders": true,
+                "specifyBody": "json",
+                "url": "https://api.anthropic.com/v1/messages"
+            },
+            "id": "node-ia-mkt",
+            "name": "📡 Chamar Claude MKT",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1200,
+                320
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "INSERT INTO agente_camaleon_sessoes (phone, nicho, historico, updated_at)\nVALUES ($1, 'marketing', $2::jsonb, NOW())\nON CONFLICT (phone) DO UPDATE SET\n  historico = EXCLUDED.historico,\n  updated_at = NOW();",
+                "options": {
+                    "queryReplacement": "={{ [$('📋 Montar Histórico Final').first().json.phone, $('📋 Montar Histórico Final').first().json.historicoJSON] }}",
+                    "queryBatching": "independently"
+                }
+            },
+            "id": "node-save-hist",
+            "name": "💾 Salvar Histórico",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2,
+            "position": [
+                1440,
+                160
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres DB Fotografia"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendText",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": [
+                        {
+                            "name": "session",
+                            "value": "default"
+                        },
+                        {
+                            "name": "chatId",
+                            "value": "={{ $('📋 Extrair Dados WAHA').first().json.phone.includes('@') ? $('📋 Extrair Dados WAHA').first().json.phone : $('📋 Extrair Dados WAHA').first().json.phone + '@c.us' }}"
+                        },
+                        {
+                            "name": "text",
+                            "value": "={{ $('🛑 Filtrar Encerrado').first().json.textoLimpo || 'Erro na resposta' }}"
+                        }
+                    ]
+                },
+                "options": {
+                    "timeout": 30000
+                },
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-send-text",
+            "name": "📤 Enviar Resposta WAHA",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1680,
+                160
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendText",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"session\": \"{{ $json.session }}\",\n  \"chatId\": \"{{ $json.phone }}@c.us\",\n  \"text\": \"✨ Ótima escolha! Você será atendida pela *Sofia*, nossa recepcionista de estética.\\n\\nComo posso te ajudar hoje?\"\n}",
+                "options": {},
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-confirm-est",
+            "name": "🌸 Confirmar Nicho Estética",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1680,
+                0
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendText",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"session\": \"{{ $json.session }}\",\n  \"chatId\": \"{{ $json.phone }}@c.us\",\n  \"text\": \"💙 Perfeito! A *Ana*, nossa secretária médica, irá te atender.\\n\\nQual especialidade você precisa?\"\n}",
+                "options": {},
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-confirm-sau",
+            "name": "🏥 Confirmar Nicho Saúde",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1680,
+                208
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendText",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"session\": \"{{ $json.session }}\",\n  \"chatId\": \"{{ $json.phone }}@c.us\",\n  \"text\": \"🚀 Show! O *Alex*, nosso consultor de automação, vai te atender.\\n\\nMe conta: qual é o seu negócio?\"\n}",
+                "options": {},
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-confirm-mkt",
+            "name": "📊 Confirmar Nicho Marketing",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                1760,
+                400
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "combinator": "and",
+                    "conditions": [
+                        {
+                            "id": "cond-media",
+                            "leftValue": "false",
+                            "operator": {
+                                "operation": "equals",
+                                "type": "string"
+                            },
+                            "rightValue": "true"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "node-if-media",
+            "name": "❓ Enviar Mídia?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                1888,
+                160
+            ],
+            "disabled": true
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendImage",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"session\": \"{{ $('📋 Extrair Dados WAHA').first().json.session }}\",\n  \"chatId\": \"{{ $('📋 Extrair Dados WAHA').first().json.phone }}@c.us\",\n  \"file\": { \"url\": \"https://dummyimage.com/600x400/000/fff&text=Agbotia+Portfolio\" },\n  \"caption\": \"✨ Veja este material!\"\n}",
+                "options": {},
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-send-img",
+            "name": "🖼️ Enviar Imagem WAHA",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                2112,
+                144
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://212.85.2.130:3001/api/sendVoice",
+                "authentication": "genericCredentialType",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"session\": \"{{ $('📋 Extrair Dados WAHA').first().json.session }}\",\n  \"chatId\": \"{{ $('📋 Extrair Dados WAHA').first().json.phone }}@c.us\",\n  \"file\": { \"url\": \"https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3\" }\n}",
+                "options": {},
+                "genericAuthType": "httpHeaderAuth"
+            },
+            "id": "node-send-audio",
+            "name": "🎵 Enviar Áudio WAHA",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4,
+            "position": [
+                2304,
+                144
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "k1y0l7T56J9x7BKb",
+                    "name": "WAHA Vitrine API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "jsCode": "const body = $input.first().json.body;\n\n// Mensagem do OPERADOR HUMANO (fromMe=true) — marca silêncio de 1 hora\nif (\n  body.event === 'message' &&\n  body.payload.fromMe === true &&\n  body.payload.body &&\n  body.payload.body.trim() !== '' &&\n  body.payload._data?.type !== 'e2e_notification'\n) {\n  return [{ json: { body, isHumanTakeover: true } }];\n}\n\n// Mensagem real do LEAD\nconst isRealMessage = (\n  body.event === 'message' &&\n  !body.payload.fromMe &&\n  body.payload.body &&\n  body.payload.body.trim() !== '' &&\n  body.payload._data?.type !== 'e2e_notification'\n);\n\nif (isRealMessage) {\n  const msgText = body.payload.body;\n  const lowerMsg = msgText.toLowerCase();\n\n  // 1. FILTRO DE NÃO-HUMANOS (ALEX 9.1) (Sistemas e Robôs)\n  const isSystemMsg = ['cod. do pedido', 'pagamento confirmado', 'assistente virtual', 'seu código', 'digite a opção', 'saldo atual', 'atendimento automatizado', 'protocolo de atendimento', 'comprovante'].some(w => lowerMsg.includes(w));\n  if (isSystemMsg) {\n    return []; // Descarta silenciosamente (evita loop com outros bots)\n  }\n\n  // 2. DETECTOR DE EMOJIS\n  // Remove todos os emojis. Se não sobrar texto (ou só espaços), é apenas emoji.\n  const textoSemEmoji = msgText.replace(/[\\p{Emoji_Presentation}\\p{Emoji}\\uFE0F\\u200D]/gu, '').trim();\n  \n  if (textoSemEmoji === '') {\n    // É apenas emoji.\n    return [];\n  }\n\n  return [{ json: { ...body, isHumanTakeover: false } }];\n}\n\nreturn []; // Descarta ruído"
+            },
+            "id": "node-filter-event-code",
+            "name": "🚦 Filtrar Evento",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                128,
+                304
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "INSERT INTO agente_camaleon_sessoes (phone, nicho, historico, updated_at)\nVALUES ('={{ $json.phone }}', 'marketing', '[]', NOW())\nON CONFLICT (phone) DO UPDATE SET nicho = 'marketing', updated_at = NOW();",
+                "options": {}
+            },
+            "id": "node-auto-mkt",
+            "name": "💾 Auto-Definir Marketing",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2,
+            "position": [
+                1008,
+                480
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres account"
+                }
+            },
+            "disabled": true
+        },
+        {
+            "parameters": {
+                "jsCode": "const extracted = $('📋 Extrair Dados WAHA').first()?.json || {};\nconst sessionRow = $('🗃️ Buscar Sessão Usuário').first()?.json || null;\nconst isHumanTakeover = extracted.isHumanTakeover || false;\nconst botPausedUntil = sessionRow?.bot_paused_until ? new Date(sessionRow.bot_paused_until) : null;\nconst phone = extracted.phone;\nconst message = extracted.message || '';\n\nif (isHumanTakeover) { return [{ json: { phone, message, isPaused: true, humanTakeover: true, mensagens_formatadas: [] } }]; }\n// if (botPausedUntil && new Date() < botPausedUntil) { return []; } // BYPASS ANTIGRAVITY\n\nlet historico = [];\nif (sessionRow?.historico) {\n  if (typeof sessionRow.historico === 'string') { try { historico = JSON.parse(sessionRow.historico); } catch(e) {} }\n  else if (Array.isArray(sessionRow.historico)) { historico = sessionRow.historico; }\n}\n\nconst RUIDO = ['[ENCERRADO]', '[object Object]', 'undefined', 'null', 'ERROR:'];\nconst historico_limpo = historico.filter(function(h) {\n  return h && h.role && typeof h.content === 'string' && h.content.trim() !== '' &&\n         (h.role === 'user' || h.role === 'assistant') &&\n         !RUIDO.some(function(p) { return h.content.includes(p); });\n});\n\nconst assistantCount = historico_limpo.filter(function(h) { return h.role === 'assistant'; }).length;\nconst msgLower = message.toLowerCase();\nconst isNao = ['nao', 'não', 'ainda nao', 'ainda não', 'agora nao', 'duvida', 'como', 'quem'].some(function(w) { return msgLower.includes(w); });\nconst isSim = ['sim', 'quero', 'pode', 'bora', 'com certeza', 'ok', 'manda', 'interessa'].some(function(w) { return msgLower.includes(w); });\n\nlet stage = 'APRESENTACAO';\n\n// REGRA ALEX 7.5: 0=Apresentação, 1-2=Doutrinação, 3+=Fechamento/Objeção\nif (assistantCount === 0) {\n    stage = 'APRESENTACAO';\n} else if (assistantCount >= 1 && assistantCount <= 2) {\n    if (isNao) stage = 'OBJECAO';\n    else stage = 'DOUTRINACAO';\n} else if (assistantCount === 3) {\n    if (isNao) stage = 'OBJECAO';\n    else stage = 'FECHAMENTO';\n} else {\n    if (isNao || !isSim) stage = 'OBJECAO';\n    else stage = 'FINALIZACAO';\n}\n\nconst stageDirective = '[DIRETIVA DO SISTEMA]\\nVOCE ESTA NA FASE: ' + stage + '\\nVEJA NO SEU ROTEIRO QUAL É O TEXTO EXATO DA FASE ' + stage + ' E RESPONDA USANDO ELE. LEMBRE-SE DO ESPAÇAMENTO OBRIGATÓRIO (DUPLO ENTER).';\n\nconst historico_limitado = historico_limpo.slice(-10);\nconst mensagens = historico_limitado.map(function(h) { return { role: h.role, content: h.content }; });\nmensagens.push({ role: 'user', content: message });\n\nreturn [{ json: { phone, message, session: extracted.session, nicho: sessionRow?.nicho, isPaused: false, mensagens_formatadas: mensagens, stageDirective: stageDirective, current_stage: stage } }];"
+            },
+            "id": "node-format-hist",
+            "name": "📝 Formatar Histórico",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                848,
+                304
+            ]
+        },
+        {
+            "id": "node-filter-encerrado",
+            "name": "🛑 Filtrar Encerrado",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1560,
+                160
+            ],
+            "parameters": {
+                "jsCode": "// 🛑 FILTRO DE SEGURANÇA 7.8 (PATCH DE LEGIBILIDADE)\nlet aiResponseRaw = '';\n\n// Captura segura em cascata\ntry { aiResponseRaw = aiResponseRaw || $('📡 Chamar Claude MKT').first()?.json?.content?.[0]?.text; } catch (e) {}\ntry { aiResponseRaw = aiResponseRaw || $('📡 Chamar Claude EST').first()?.json?.content?.[0]?.text; } catch (e) {}\ntry { aiResponseRaw = aiResponseRaw || $('📡 Chamar Claude SAU').first()?.json?.content?.[0]?.text; } catch (e) {}\n\naiResponseRaw = (aiResponseRaw || '').trim();\nconst phone = $('📋 Extrair Dados WAHA').first().json.phone;\n\nconst isEncerrado = aiResponseRaw.includes('[ENCERRADO]');\n\n// 🛠️ LIMPEZA CIRÚRGICA (Apenas o que está entre colchetes)\n// Remove [ENCERRADO], [DIRETIVA...], [FASE...], etc.\nlet textoLimpo = aiResponseRaw.replace(/\\[.*?\\]/g, '').trim();\n\n// Remove rastros de fase caso venham sem colchetes (segurança extra)\ntextoLimpo = textoLimpo.replace(/VOCE ESTA NA FASE:.*?(\\n|$)/g, '').trim();\n\n// 🚨 PRESERVAÇÃO DE FORMATO\n// Garante que o texto final não seja uma tripa. Se o texto sumiu, usa o fallback.\nif (!textoLimpo || textoLimpo.length < 5) {\n    // Se a limpeza foi agressiva demais ou o Claude falhou, envia o fallback\n    if (aiResponseRaw.length > 10 && !isEncerrado) {\n        // Se tinha texto original mas a limpeza matou tudo, recupera o original sem as tags conhecidas\n        textoLimpo = aiResponseRaw.replace(/\\[ENCERRADO\\]/g, '').replace(/\\[DIRETIVA DO SISTEMA\\]/g, '').trim();\n    } else {\n        textoLimpo = 'Entendido, vou verificar isso para você.';\n    }\n}\n\nreturn [{ json: {\n  isEncerrado: isEncerrado,\n  textoLimpo: textoLimpo,\n  phone: phone\n} }];"
+            }
+        },
+        {
+            "id": "node-montar-historico",
+            "name": "📋 Montar Histórico Final",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1380,
+                320
+            ],
+            "parameters": {
+                "jsCode": "// Monta o array final do histórico de forma segura antes de salvar\nconst formattedMsgs = $('📝 Formatar Histórico').first().json.mensagens_formatadas || [];\nconst aiText = $('📡 Chamar Claude MKT').first().json.content?.[0]?.text || '';\nconst phone = $('📋 Extrair Dados WAHA').first().json.phone;\n\n// Novo array: histórico anterior + resposta da IA\nconst novoHistorico = [...formattedMsgs, { role: 'assistant', content: aiText }];\n\n// Serializar uma única vez — sem nenhuma manipulação extra\nconst historicoJSON = JSON.stringify(novoHistorico);\n\nreturn [{ json: { phone, historicoJSON } }];"
+            }
+        },
+        {
+            "id": "node-pausar-bot",
+            "name": "⏸️ Pausar Bot 24h",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.5,
+            "position": [
+                1960,
+                80
+            ],
+            "parameters": {
+                "operation": "executeQuery",
+                "options": {
+                    "queryReplacement": "={{ [$json.phone] }}"
+                },
+                "query": "UPDATE agente_camaleon_sessoes SET bot_paused_until = NOW() + INTERVAL '24 hours', updated_at = NOW() WHERE phone = $1;"
+            },
+            "credentials": {
+                "postgres": {
+                    "id": "5Uh0LTEOCQy2boJP",
+                    "name": "Postgres DB Fotografia"
+                }
+            },
+            "disabled": true
+        },
+        {
+            "id": "node-alertar-dono",
+            "name": "🔔 Alertar Dono",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1960,
+                200
+            ],
+            "parameters": {
+                "bodyParameters": {
+                    "parameters": [
+                        {
+                            "name": "session",
+                            "value": "default"
+                        },
+                        {
+                            "name": "chatId",
+                            "value": "5591983682421@c.us"
+                        },
+                        {
+                            "name": "text",
+                            "value": "={{ '🔥 LEAD QUALIFICADO\\n📱 Número: ' + $json.phone + '\\n\\nAguarda seu contato agora!' }}"
+                        }
+                    ]
+                },
+                "method": "POST",
+                "options": {
+                    "timeout": 30000
+                },
+                "url": "http://212.85.2.130:3001/api/sendText"
+            }
+        },
+        {
+            "id": "node-if-encerrado",
+            "name": "🔄 Lead Encerrado?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                1760,
+                160
+            ],
+            "parameters": {
+                "conditions": {
+                    "combinator": "and",
+                    "conditions": [
+                        {
+                            "id": "cond-encerrado",
+                            "leftValue": "={{ $json.isEncerrado }}",
+                            "operator": {
+                                "operation": "equals",
+                                "type": "boolean"
+                            },
+                            "rightValue": true
+                        }
+                    ],
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    }
+                }
+            }
+        }
+    ],
+    "connections": {
+        "📋 Extrair Dados WAHA": {
+            "main": [
+                [
+                    {
+                        "index": 0,
+                        "node": "🗃️ Buscar Sessão Usuário",
+                        "type": "main"
+                    }
+                ]
+            ]
+        },
+        "🗃️ Buscar Sessão Usuário": {
+            "main": [
+                [
+                    {
+                        "index": 0,
+                        "node": "🔄 Merge Dados + Sessão",
+                        "type": "main"
+                    }
+                ]
+            ]
+        },
+        "❓ Tem Nicho Selecionado?": {
+            "main": [
+                [
+                    {
+                        "node": "🦎 Switch Nicho Ativo",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "💾 Auto-Definir Marketing",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🔢 Switch Seleção de Nicho": {
+            "main": [
+                [
+                    {
+                        "node": "💾 Salvar Nicho Estética",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "💾 Salvar Nicho Saúde",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "💾 Salvar Nicho Marketing",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "📋 Enviar Menu de Nichos",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🦎 Switch Nicho Ativo": {
+            "main": [
+                [],
+                [],
+                [
+                    {
+                        "node": "📡 Chamar Claude MKT",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📡 Chamar Claude MKT": {
+            "main": [
+                [
+                    {
+                        "node": "📋 Montar Histórico Final",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "💾 Salvar Histórico": {
+            "main": [
+                [
+                    {
+                        "node": "🛑 Filtrar Encerrado",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "💾 Salvar Nicho Estética": {
+            "main": [
+                [
+                    {
+                        "node": "🌸 Confirmar Nicho Estética",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "💾 Salvar Nicho Saúde": {
+            "main": [
+                [
+                    {
+                        "node": "🏥 Confirmar Nicho Saúde",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "💾 Salvar Nicho Marketing": {
+            "main": [
+                [
+                    {
+                        "node": "📊 Confirmar Nicho Marketing",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "❓ Enviar Mídia?": {
+            "main": [
+                [
+                    {
+                        "node": "🖼️ Enviar Imagem WAHA",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🖼️ Enviar Imagem WAHA": {
+            "main": [
+                [
+                    {
+                        "node": "🎵 Enviar Áudio WAHA",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📩 Webhook WAHA Vitrine": {
+            "main": [
+                [
+                    {
+                        "node": "🚦 Filtrar Evento",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🚦 Filtrar Evento": {
+            "main": [
+                [
+                    {
+                        "node": "📋 Extrair Dados WAHA",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🔄 Merge Dados + Sessão": {
+            "main": [
+                [
+                    {
+                        "node": "📝 Formatar Histórico",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📝 Formatar Histórico": {
+            "main": [
+                [
+                    {
+                        "node": "📡 Chamar Claude MKT",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📋 Montar Histórico Final": {
+            "main": [
+                [
+                    {
+                        "node": "💾 Salvar Histórico",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🛑 Filtrar Encerrado": {
+            "main": [
+                [
+                    {
+                        "node": "🔄 Lead Encerrado?",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🔄 Lead Encerrado?": {
+            "main": [
+                [
+                    {
+                        "node": "⏸️ Pausar Bot 24h",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "📤 Enviar Resposta WAHA",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "⏸️ Pausar Bot 24h": {
+            "main": [
+                [
+                    {
+                        "node": "🔔 Alertar Dono",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1",
+        "saveDataErrorExecution": "all",
+        "saveDataSuccessExecution": "all",
+        "saveManualExecutions": true,
+        "saveExecutionProgress": true
     }
-  ],
-  "connections": {
-    "node-webhook": { "main": [[{ "node": "node-extract", "type": "main", "index": 0 }]] },
-    "node-extract": { "main": [[{ "node": "node-get-session", "type": "main", "index": 0 }]] },
-    "node-get-session": { "main": [[{ "node": "node-merge-session", "type": "main", "index": 0 }]] },
-    "node-merge-session": { "main": [[{ "node": "node-format-hist", "type": "main", "index": 0 }]] },
-    "node-format-hist": { "main": [[{ "node": "node-ia-mkt", "type": "main", "index": 0 }]] },
-    "node-ia-mkt": { "main": [[{ "node": "node-filter-encerrado", "type": "main", "index": 0 }]] },
-    "node-filter-encerrado": { "main": [[{ "node": "node-if-encerrado", "type": "main", "index": 0 }]] },
-    "node-if-encerrado": {
-      "main": [
-        [{ "node": "node-pausar-bot", "type": "main", "index": 0 }],
-        [{ "node": "node-send-text", "type": "main", "index": 0 }]
-      ]
-    },
-    "node-pausar-bot": { "main": [[{ "node": "node-alertar-dono", "type": "main", "index": 0 }]] }
-  }
 }

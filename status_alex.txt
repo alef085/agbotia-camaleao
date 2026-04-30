@@ -1,0 +1,16 @@
+--- STATUS DO AGENTE CAMALEÃO (ALEX) ---
+Data: 2026-04-30
+Versão: 9.1 (Estável com Pausa 24h Bypass)
+Workflow ID: 6nJBQ4J8SkysTTbx
+Repositório: alef085/agbotia-camaleao
+
+Credenciais Principais:
+- PostgreSQL: 5Uh0LTEOCQy2boJP (Host: postgres_saas)
+- WAHA (HTTP Header Auth): k1y0l7T56J9x7BKb (API Key do WAHA)
+
+Configurações Críticas:
+- Nó "📝 Formatar Histórico": Bypass na lógica bot_paused_until (comentado).
+- Nó "⏸️ Pausar Bot 24h": Desativado temporariamente para estabilização.
+- SQL: Todos os campos utilizando o prefixo '=' para compatibilidade n8n v4.
+---
+Gerado automaticamente pelo Antigravity em 30/04/2026.
