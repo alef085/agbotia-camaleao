@@ -205,27 +205,34 @@ Como apenas UMA das 3 IAs executa por vez (Switch de nicho), a expressão de cap
 
 ```
 Webhook → 🚡 Filtrar Evento → 📋 Extrair Dados WAHA
-                                       │
-                            🗃️ Buscar Sessão Usuário (Postgres)
-                                       │
-                            🔀 Merge Dados + Sessão
-                                       │
-                            📝 Formatar Histórico
-                                       │
-                       ┌── ❓ Tem Nicho? ──┐
-                       │ SIM              │ NÃO
-                       ▼                  ▼
-            🦎 Switch Nicho      💾 Auto-Definir Marketing
-           /     |      \                │
-    EST     SAU    MKT    ───────────────►│
-     │       │      │
-     └───────┴──────┘
-            │
-     📡 Chamar Claude [EST/SAU/MKT]
-            │
-     💾 Salvar Histórico (Postgres)
-            │
-     📤 Enviar Resposta WAHA
+                                        │
+                             🗃️ Buscar Sessão Usuário (Postgres)
+                                        │
+                             🔀 Merge Dados + Sessão
+                                        │
+                             📝 Formatar Histórico
+                                        │
+                        ┌── ❓ Tem Nicho? ──┐
+                        │ SIM              │ NÃO
+                        ▼                  ▼
+             🦎 Switch Nicho      💾 Auto-Definir Marketing
+            /     |      \                │
+     EST     SAU    MKT    ───────────────►│
+      │       │      │
+      └───────┴──────┘
+             │
+      📡 Chamar Claude [EST/SAU/MKT]
+             │
+      💾 Salvar Histórico (Postgres)
+             │
+      🛑 Filtrar Encerrado (Code)
+             │
+      ┌── ❓ Lead Encerrado? ──┐
+      │ SIM (Tag [ENCERRADO]) │ NÃO
+      ▼                       ▼
+⏸️ Pausar Bot 24h (Postgres)  📤 Enviar Resposta WAHA
+      │
+🔔 Alertar Dono (WAHA)
 ```
 
 ---
@@ -240,153 +247,51 @@ O fluxo do Alex não é mais baseado em "decisão" da IA, mas sim em um contador
 | **0** | `APRESENTACAO` | Valor imediato e permissão. |
 | **1 - 2** | `DOUTRINACAO` | Conscientização sobre perda de vendas. |
 | **3** | `FECHAMENTO` | Oferta de projeto sob medida. |
-| **3+** | `OBJECAO / DUVIDA` | Rotação de 3 CTAs para transbordo técnico. |
+| **3+** | `OBJECAO / DUVIDA` | Rotação de CTAs ou Transição Humana. |
+| **Aceite** | `FINALIZACAO` | Encerramento com tag **[ENCERRADO]**. |
 
 ### 2. Rotação de CTA (Anti-Loop)
-Para evitar que o bot se torne repetitivo na fase final, ele foi instruído a **nunca repetir o mesmo convite** do turno anterior. Ele alterna entre:
+Para evitar que o bot se torne repetitivo na fase final, ele alterna entre:
 - Convite para falar com o **consultor**.
 - Convite para falar com o **especialista**.
 - Convite para alinhar com o **time técnico**.
 
-### 3. Censura de Tags Internas
-O marcador `[ENCERRADO]` e as diretivas de fase são filtrados no nó `🛑 Filtrar Encerrado` antes de chegarem ao WAHA. O lead recebe apenas o texto limpo.
+### 3. Handover Humano Imediato (Alex 9.1)
+Ao detectar intenção de compra ou o lead dizer "SIM", o bot deve:
+1.  Gerar a tag **`[ENCERRADO]`** ao final da mensagem.
+2.  A tag é filtrada pelo nó `🛑 Filtrar Encerrado`, garantindo que o lead não veja o comando técnico.
+3.  O workflow identifica a flag `isEncerrado` e silencia o robô por **24 horas** via banco de dados.
+4.  O proprietário recebe um alerta imediato com o número do lead qualificado.
 
 ---
 
 ## 🗣️ Protocolos de Resposta — Alex 7.5
 
-> **Estas regras são parte do Core de Inteligência e devem estar sempre sincronizadas com o prompt no nó `📡 Chamar Claude MKT`.**
+### 🧠 Identidade Base: O Consultor de Automação
 
-### 🧠 Identidade Base: O Consultor de Belém
-
-O Alex não é um assistente virtual. É um **parceiro de negócios** que fala como alguém que vive e trabalha em Belém/PA. O tom de voz é a BASE IMUТÁVEL de todas as respostas:
+O Alex é um **parceiro de negócios** que fala de forma direta e profissional.
 
 | Correto (✅) | Proibido (❌) |
 |---|---|
-| `tu`, `pois é`, `né não?`, `a gente` | `você`, `nossa empresa`, `prezado cliente` |
-| Direto e confiante | Listas numeradas longas |
-| 1 emoji por mensagem | Emoticons em contextos sérios |
-| Apresentar-se uma vez | Reapresentar-se a cada mensagem |
+| `tu`, `pois é`, `né não?` | `você`, `nossa empresa`, `prezado cliente` |
+| Máximo 2 parágrafos | Blocos densos de texto |
+| Espaço duplo antes da pergunta | Perguntas coladas no texto |
+| 1 emoji por mensagem | Excesso de emojis |
 
 ---
 
-### 📱 Regra de Ouro: Máximo 2 Linhas por Mensagem
+## ⚡ Trava de Pausa Pós-Fechamento (24h)
 
-**Esta é a regra mais crítica para o WhatsApp.** Mensagens longas são ignoradas ou cansam o lead.
+O sistema conta com um bloqueio de execução para evitar loops pós-qualificação:
 
-```
-❌ ERRADO (1 mensagem longa):
-"Oi! Sou o Alex, consultor de automação da Agbotia de Belém/PA.
-Ajudo empresas a reduzir o tempo de resposta no WhatsApp usando
-Inteligência Artificial treinada especificamente para o seu negócio,
-disponível 24 horas por dia, 7 dias por semana. Gostaria de saber
-mais sobre como funciona?"
-
-✅ CORRETO (2 mensagens curtas):
-"Oi! Sou o Alex, consultor de automação aqui em Belém."
-"Ajudo empresas a parar de perder cliente por demora no WhatsApp. Posso te falar mais?"
-```
-
-> **Regra técnica:** Se a resposta precisar de mais de 2 linhas, **divida em duas chamadas separadas** — nunca em um único bloco.
-
----
-
-### 💰 Bloqueio de Preço (Inviolável)
-
-Qualquer pergunta sobre valores, planos ou pacotes deve receber **exatamente** esta resposta:
-
-```
-"Não tem valor fixo — tudo é feito sob medida.
-O nosso especialista te passa o investimento exato depois de entender o teu negócio."
-```
-
-| Proibido | Correto |
-|---|---|
-| Citar valores específicos | Explicar que é sob medida |
-| Mencionar planos/pacotes | Direcionar para o especialista humano |
-| Dar faixas de preço | Manter a conversa avancando no fluxo |
-
----
-
-### 🔄 Fluxo Obrigatório (4 Etapas)
-
-```
-Etapa 1 — Apresentação de Valor (1ª mensagem)
-   └──► Se o lead pedir mais
-
-Etapa 2 — Demonstração de Valor
-   "Respondo teus clientes na hora, 24h por dia..."
-   "Enquanto tu tá em reunião, to aqui qualificando e vendendo."
-   "WhatsApp lotado, demora na resposta — isso acontece aí?" ◄── 1 pergunta de dor
-   └──► Se o lead confirmar a dor
-
-Etapa 3 — Diferencial e Proposta (CTA)
-   "Meu trabalho é 100% sob medida: não vendo software pra tu configurar."
-   "Quer que eu prepare um projeto sob medida pra tua empresa?"
-   └──► Se o lead confirmar interesse
-
-Etapa 4 — Encerramento DEFINITIVO
-   "Perfeito. Nosso especialista já foi notificado e te chama em instantes. Obrigado!"
-   └──► PARA. O humano assume. Não responda mais.
-```
-
-### ⚡ Gatilhos de Encerramento Antecipado
-
-Se o lead disser qualquer uma dessas frases, **vá direto ao encerramento**:
-
-| Frase do Lead | Ação do Alex |
-|---|---|
-| `"quero"`, `"pode fazer"`, `"sim"` (após CTA) | Encerramento imediato |
-| `"me passa um contato"`, `"quero falar com alguém"` | Encerramento imediato |
-| Pedir objetividade **pela segunda vez** | Encerramento — sem mais diagnóstico |
-
----
-
-## 🔑 Credenciais (IDs de referência — não contém valores reais)
-
-| Credencial | ID no n8n | Uso |
-|---|---|---|
-| Postgres | `MAUejev0zls5AVog` | Sessões e histórico |
-| WAHA API Key | `k1y0l7T56J9x7BKb` | Envio de mensagens |
-| Anthropic | Injetada via ENV | `ANTHROPIC_API_KEY` no container |
-
----
-
-## 📁 Estrutura do Repositório
-
-```
-agbotia-camaleao/
-├── README.md              ← Este arquivo (manual técnico)
-├── BUSINESS_LOGIC.md      ← Regras de negócio e personas
-└── backups/
-    └── workflow_YYYY-MM-DD.json  ← Backups datados do workflow n8n
-```
-
----
-
-## 📋 Links Úteis
-
-- **n8n Workflow:** https://n8n.agbotia.com.br/workflow/6nJBQ4J8SkysTTbx
-- **WAHA Vitrine Dashboard:** http://212.85.2.130:3001/dashboard
-- **WAHA Vitrine API:** http://212.85.2.130:3001/api
-- **Regras de Negócio:** [BUSINESS_LOGIC.md](./BUSINESS_LOGIC.md)
-
----
-
-## 🔒 Segurança e Anti-Loop (Alex 9.1)
-
-O sistema agora conta com um triplo bloqueio de execução para evitar loops infinitos com outros bots e spam:
-
-1.  **Filtro de Sistema (Entrada):** O nó de entrada (`🚡 Filtrar Evento`) descarta mensagens com termos como `cod. do pedido`, `comprovante`, `assistente virtual`, etc.
-2.  **Detector de Mudez (Emojis):** Mensagens compostas exclusivamente por emojis não geram resposta da IA, aplicando o "Vácuo Estratégico".
-3.  **Trava de Rajada (Rate Limit):** O sistema monitora a frequência de mensagens. Se o mesmo contato enviar 5 mensagens em menos de 120 segundos, o bot é silenciado para aquele número automaticamente.
-4.  **Pausa Automática Pós-Fechamento (24h):** Após enviar a tag `[ENCERRADO]`, o bot atualiza a coluna `bot_paused_until` no banco com a data/hora atual + 24h, bloqueando respostas da IA para permitir intervenção humana segura.
+1.  **Gatilho:** Presença da tag `[ENCERRADO]` na resposta da IA.
+2.  **Ação:** Atualização da coluna `bot_paused_until` no banco com `NOW() + INTERVAL '24 hours'`.
+3.  **Resultado:** O nó `📝 Formatar Histórico` aborta a execução se detectar que o tempo de pausa ainda não expirou.
+4.  **Notificação:** O nó `🔔 Alertar Dono` envia os dados do lead para atendimento manual.
 
 ---
 
 ## 🗃️ Schema do Banco de Dados (Postgres)
-
-A tabela principal do sistema (`agente_camaleon_sessoes`) requer a seguinte estrutura mínima para suportar as travas do Alex 9.1:
 
 ```sql
 CREATE TABLE IF NOT EXISTS agente_camaleon_sessoes (
@@ -402,10 +307,9 @@ CREATE TABLE IF NOT EXISTS agente_camaleon_sessoes (
 
 ## ⚡ Arquitetura Híbrida de Modelos
 
-Para otimizar custos em até 60% sem perder a qualidade do fechamento:
 - **Triagem (Nicho SAU):** Claude 3.5 Haiku (Rápido e Barato).
 - **Venda (Nicho MKT/EST):** Claude 3.5 Sonnet (Inteligente e Persuasivo).
 
 ---
 
-*Última atualização: 2026-04-30 | Alex 9.1 em produção | Histórico limitado a 10 mensagens*
+*Última atualização: 2026-05-06 | Alex 9.1 Estabilizado | Lógica de Handover Ativa*
